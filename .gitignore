@@ -1,9 +1,30 @@
+# Python
 __pycache__/
 *.pyc
-*.log
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment
 .env
 .venv/
-.pytest_cache/
+venv/
+*.log
+
+# Database / User data (may contain sensitive info)
 *.db
+*.sqlite
 *.sqlite3
-kg_store.json
+user_data/
+user_sessions.json*
+
+# IDE
+.vscode/
+.idea/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
