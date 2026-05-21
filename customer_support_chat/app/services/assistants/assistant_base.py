@@ -1,50 +1,79 @@
-from typing import Optional
-from langchain_core.runnables import Runnable, RunnableConfig
-from customer_support_chat.app.core.state import State
-from pydantic import BaseModel
-from customer_support_chat.app.core.settings import get_settings
+"""
+Base Assistant — LangGraph-compatible agent wrapper for the Health Assistant system.
+
+All specialized health agents extend this pattern.
+"""
+
+from typing import List, Optional, Callable
+from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
 
-settings = get_settings()
+from customer_support_chat.app.core.settings import OPENAI_API_KEY, OPENAI_BASE_URL, MODEL_NAME
+from customer_support_chat.app.core.logger import logger
 
-# Initialize the language model (shared among assistants)
+
+# ── Shared LLM instance ───────────────────────────────────────────────
+
 llm = ChatOpenAI(
-    model=settings.OPENAI_MODEL,
-    openai_api_key=settings.OPENAI_API_KEY,
-    openai_api_base=settings.OPENAI_BASE_URL if settings.OPENAI_BASE_URL else None,
-    temperature=1,
-    max_tokens=settings.MAX_TOKENS,  # Limit tokens to control costs
+    model=MODEL_NAME,
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL,
+    temperature=0.1,
 )
 
-class Assistant:
-    def __init__(self, runnable: Runnable):
-        self.runnable = runnable
 
-    def __call__(self, state: State, config: Optional[RunnableConfig] = None):
-        while True:
-            result = self.runnable.invoke(state, config)
+# ── CompleteOrEscalate tool ───────────────────────────────────────────
 
-            if not result.tool_calls and (
-                not result.content
-                or isinstance(result.content, list)
-                and not result.content[0].get("text")
-            ):
-                messages = state["messages"] + [("user", "Respond with a real output.")]
-                state = {**state, "messages": messages}
-            else:
-                break
-        return {"messages": result}
-
-# Define the CompleteOrEscalate tool
-@tool
-def CompleteOrEscalate(reason: str) -> str:
-    """A tool to mark the current task as completed or to escalate control to the main assistant.
-    
-    Args:
-        reason: Reason for completion or escalation
-        
-    Returns:
-        A message confirming the action
+class CompleteOrEscalate:
     """
-    return f"Task completed/escalated to main assistant. Reason: {reason}"
+    Call when the specialized agent has completed its task or needs
+    to escalate back to the primary health assistant.
+    """
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+        self.result = "Task completed/escalated to main assistant"
+
+    def __call__(self) -> str:
+        return self.result
+
+
+class Assistant:
+    """
+    A LangGraph-compatible reactive agent wrapper.
+
+    Each specialized health agent uses this pattern:
+    1. Define delegation tool(s) for routing
+    2. Define domain tools for the agent's tasks
+    3. Provide a system prompt describing the agent's role
+    """
+
+    def __init__(
+        self,
+        delegation_tools: List[type],
+        domain_tools: List[BaseTool],
+        agent_name: str,
+        system_prompt: str,
+        model: Optional[BaseChatModel] = None,
+    ):
+        self.agent_name = agent_name
+        self.system_prompt = system_prompt
+        self.model = model or llm
+        all_tools = delegation_tools + domain_tools
+        self.tools = all_tools
+        self.agent = create_react_agent(
+            self.model,
+            all_tools,
+            state_modifier=system_prompt,
+        )
+        logger.info(f"🤖 Agent created: {agent_name} ({len(all_tools)} tools)")
+
+    def __call__(self, state, config=None):
+        """Invoke the agent synchronously."""
+        return self.agent.invoke(state, config=config)
+
+    async def ainvoke(self, state, config=None):
+        """Invoke the agent asynchronously."""
+        return await self.agent.ainvoke(state, config=config)

@@ -1,3 +1,21 @@
+"""
+Personal Health Assistant — LangGraph StateGraph with 9 specialized agents.
+
+Architecture (Supervisor Pattern):
+  User → Guardrails → Primary Health Assistant → Specialized Agent → Tools → Back
+
+Agents:
+  1. Appointment    — Book/cancel medical appointments
+  2. Medication     — Manage medications, reminders, interactions
+  3. Emergency      — First aid and emergency guidance
+  4. Health Tips    — Exercise, diet, sleep, mental health
+  5. Medical Record — View/add medical history
+  6. Health Assess  — Symptom checker, risk evaluation
+  7. Medical KB     — Medical literature and drug search
+  8. Medical KG     — Disease-Symptom-Medication knowledge graph
+  9. Primary        — Orchestrator, routes to specialists
+"""
+
 from typing import Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -5,516 +23,465 @@ from langgraph.prebuilt import tools_condition
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import HumanMessage
 
-# GoHumanLoop imports (moved to humanloop_manager.py to avoid circular imports)
-# from gohumanloop.core.manager import DefaultHumanLoopManager
-# from gohumanloop.adapters.langgraph_adapter import HumanloopAdapter
-# from gohumanloop.providers.terminal_provider import TerminalProvider
-from customer_support_chat.app.core.humanloop_manager import humanloop_adapter
-
 from customer_support_chat.app.core.state import State
 from customer_support_chat.app.core.logger import logger
 from customer_support_chat.app.services.utils import (
-  create_tool_node_with_fallback,
-  flight_info_to_string,
-  create_entry_node,
+    create_tool_node_with_fallback,
+    create_entry_node,
 )
-from customer_support_chat.app.services.tools.flights import fetch_user_flight_information
-# Import guardrail agents
+
+# ── Guardrails ────────────────────────────────────────────────────────
+
 from customer_support_chat.app.services.guardrails.guardrail_agents import (
     jailbreak_guardrail_agent,
     jailbreak_guardrail_agent_instructions,
     relevance_guardrail_agent,
     relevance_guardrail_agent_instructions,
 )
+
+# ── Base ──────────────────────────────────────────────────────────────
+
 from customer_support_chat.app.services.assistants.assistant_base import (
-  Assistant,
-  CompleteOrEscalate,
-  llm,
-)
-# Import new assistants and their tools
-from customer_support_chat.app.services.assistants.woocommerce_assistant import (
-  woocommerce_assistant,
-  ToWooCommerceProducts,
-  ToWooCommerceOrders,
-)
-from customer_support_chat.app.services.tools.woocommerce import (
-  search_products,
-  search_orders,
-)
-from customer_support_chat.app.services.tools.forms import submit_form
-from customer_support_chat.app.services.tools.blog import search_blog_posts
-from customer_support_chat.app.services.assistants.form_submission_assistant import (
-  form_submission_assistant,
-  ToFormSubmission,
-)
-from customer_support_chat.app.services.assistants.blog_search_assistant import (
-  blog_search_assistant,
-  ToBlogSearch,
+    Assistant, CompleteOrEscalate, llm,
 )
 
-# Knowledge Graph Agent imports
-from customer_support_chat.app.services.knowledge_graph.kg_agent import (
-    kg_agent_node,
-    kg_agent,
-    kg_agent_tools,
-    route_kg_agent,
-    create_kg_agent,
-)
-from customer_support_chat.app.services.knowledge_graph.kg_agent import ToKnowledgeGraph
+# ── Primary Assistant ─────────────────────────────────────────────────
 
 from customer_support_chat.app.services.assistants.primary_assistant import (
-  primary_assistant,
-  primary_assistant_tools,
-  ToFlightBookingAssistant,
-  ToBookCarRental,
-  ToHotelBookingAssistant,
-  ToBookExcursion,
-)
-from customer_support_chat.app.services.assistants.flight_booking_assistant import (
-  flight_booking_assistant,
-  update_flight_safe_tools,
-  update_flight_sensitive_tools,
-)
-from customer_support_chat.app.services.assistants.car_rental_assistant import (
-  car_rental_assistant,
-  book_car_rental_safe_tools,
-  book_car_rental_sensitive_tools,
-)
-from customer_support_chat.app.services.assistants.hotel_booking_assistant import (
-  hotel_booking_assistant,
-  book_hotel_safe_tools,
-  book_hotel_sensitive_tools,
-)
-from customer_support_chat.app.services.assistants.excursion_assistant import (
-  excursion_assistant,
-  book_excursion_safe_tools,
-  book_excursion_sensitive_tools,
+    primary_assistant, primary_assistant_tools,
+    ToAppointmentBooking, ToMedicationManagement, ToEmergencyAssist,
+    ToHealthTips, ToMedicalRecords, ToHealthAssessment,
+    ToMedicalKnowledgeSearch, ToMedicalKnowledgeGraph,
 )
 
-# Initialize HumanLoopManager and HumanloopAdapter for GoHumanLoop
-# humanloop_manager = DefaultHumanLoopManager(
-#     initial_providers=TerminalProvider(name="TerminalProvider")
-# )
-# humanloop_adapter = HumanloopAdapter(humanloop_manager, default_timeout=60)
-# Moved to humanloop_manager.py to avoid circular imports
+# ── Specialized Agents ────────────────────────────────────────────────
 
-# Initialize the graph
+from customer_support_chat.app.services.assistants.appointment_assistant import (
+    appointment_booking_assistant,
+    appointment_safe_tools,
+    appointment_sensitive_tools,
+)
+
+from customer_support_chat.app.services.assistants.medication_assistant import (
+    medication_management_assistant,
+    medication_safe_tools,
+    medication_sensitive_tools,
+)
+
+from customer_support_chat.app.services.assistants.emergency_assistant import (
+    emergency_assistant,
+    emergency_safe_tools,
+)
+
+from customer_support_chat.app.services.assistants.health_tips_assistant import (
+    health_tips_assistant,
+    health_tips_safe_tools,
+)
+
+from customer_support_chat.app.services.assistants.medical_record_assistant import (
+    medical_record_assistant,
+    medical_record_safe_tools,
+    medical_record_sensitive_tools,
+)
+
+from customer_support_chat.app.services.assistants.health_assessment_assistant import (
+    health_assessment_assistant,
+    health_assessment_safe_tools,
+)
+
+from customer_support_chat.app.services.assistants.medical_kb_assistant import (
+    medical_kb_agent,
+    medical_kb_safe_tools,
+)
+
+from customer_support_chat.app.services.knowledge_graph.medical_kg_agent import (
+    kg_agent_node, kg_agent_tools, ToMedicalKnowledgeGraph,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Initialize the StateGraph
+# ═══════════════════════════════════════════════════════════════════════
+
 builder = StateGraph(State)
 
+
+# ── User Info Node ────────────────────────────────────────────────────
+
 def user_info(state: State, config: RunnableConfig):
-  # Fetch user flight information
-  flight_info = fetch_user_flight_information.invoke(input={}, config=config)
-  user_info_str = flight_info_to_string(flight_info)
-  return {"user_info": user_info_str}
+    """Fetch user health profile for context."""
+    from customer_support_chat.app.services.tools.health import fetch_user_health_profile
+    user_id = state.get("user_id", "default_user")
+    profile_str = fetch_user_health_profile.invoke({"user_id": user_id})
+    return {"user_info": profile_str}
 
 builder.add_node("fetch_user_info", user_info)
 
-# --- Security Guardrail Node ---
+
+# ── Guardrail Node ────────────────────────────────────────────────────
+
 def guardrail_check(state: State, config: RunnableConfig):
-    """Node to check user input for safety and relevance."""
-    # Get the latest user message
-    # Assuming the last message is always from the user in this context
+    """Check user input for safety and medical relevance."""
     user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
     if not user_messages:
-        logger.warning("No user message found for guardrail check. Allowing.")
-        return {
-            "messages": [HumanMessage(content="No user input to check. Please provide a query.")]
-        }
-    
+        logger.warning("No user message for guardrail check. Allowing.")
+        return {"messages": [HumanMessage(content="No input detected. Please share your health concern.")]}
+
     latest_user_message = user_messages[-1]
     user_input = latest_user_message.content
-    
-    logger.info(f"🛡️ Checking safety and relevance for user input: '{user_input}'")
-    
-    # 1. Check for Jailbreak attempts
+
+    logger.info(f"🛡️ Guardrail check: '{user_input[:80]}...'")
+
+    # 1. Jailbreak detection
     jailbreak_prompt = f"{jailbreak_guardrail_agent_instructions}\n\nUser Input: {user_input}"
     jailbreak_result = jailbreak_guardrail_agent.invoke(jailbreak_prompt)
-    
-    if not jailbreak_result.is_safe:
-        logger.warning(f"🚨 Jailbreak attempt detected: {jailbreak_result.reasoning}")
-        return {
-            "messages": [HumanMessage(content=f"I cannot assist with that request. Reason: {jailbreak_result.reasoning}")]
-        }
 
-    # 2. Check for Relevance
+    if not jailbreak_result.is_safe:
+        logger.warning(f"🚨 Jailbreak detected: {jailbreak_result.reasoning}")
+        return {"messages": [HumanMessage(
+            content=f"I cannot process that request as it appears to violate safety guidelines. "
+                    f"If you have a health concern, I'd be happy to help."
+        )]}
+
+    # 2. Relevance check
     relevance_prompt = f"{relevance_guardrail_agent_instructions}\n\nUser Input: {user_input}"
     relevance_result = relevance_guardrail_agent.invoke(relevance_prompt)
-    
+
     if not relevance_result.is_relevant:
-        logger.warning(f"⚠️ Irrelevant input detected: {relevance_result.reasoning}")
-        # For now, we will still allow the conversation to proceed, but log the issue.
-        # This could be changed to return a message and end the conversation if desired.
-        # return {
-        #     "messages": [HumanMessage(content=f"I can only help with queries related to flights, hotels, car rentals, excursions, e-commerce, forms, and blog searches. Your query seems unrelated. Reason: {relevance_result.reasoning}")]
-        # }
-        
-    # If both checks pass, the input is safe and (at least potentially) relevant.
-    logger.info("✅ Input passed safety and relevance checks.")
-    return {"messages": []} # No new message to add, just proceed
+        logger.warning(f"⚠️ Irrelevant input: {relevance_result.reasoning}")
+        return {"messages": [HumanMessage(
+            content=f"I'm a Personal Health Assistant — I can help with health and medical questions. "
+                    f"Your query seems to be about something else ({relevance_result.category}). "
+                    f"Is there a health-related question I can assist with?"
+        )]}
+
+    logger.info(f"✅ Passed guardrails. Category: {relevance_result.category}")
+    return {"messages": []}
 
 builder.add_node("guardrail_check", guardrail_check)
 
-# --- Graph Edges ---
-builder.add_edge(START, "fetch_user_info")
-builder.add_edge("fetch_user_info", "guardrail_check")
 
-# Flight Booking Assistant
-builder.add_node(
-  "enter_update_flight",
-  create_entry_node("Flight Updates & Booking Assistant", "update_flight"),
-)
-builder.add_node("update_flight", flight_booking_assistant)
-builder.add_edge("enter_update_flight", "update_flight")
-builder.add_node(
-  "update_flight_safe_tools",
-  create_tool_node_with_fallback(update_flight_safe_tools),
-)
-builder.add_node(
-  "update_flight_sensitive_tools",
-  create_tool_node_with_fallback(update_flight_sensitive_tools),
-)
+# ═══════════════════════════════════════════════════════════════════════
+# Helper: route back to primary or stay
+# ═══════════════════════════════════════════════════════════════════════
 
-def route_update_flight(state: State) -> Literal[
-  "update_flight_safe_tools",
-  "update_flight_sensitive_tools",
-  "primary_assistant",
-  "__end__",
-]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  tool_calls = state["messages"][-1].tool_calls
-  safe_toolnames = [t.name for t in update_flight_safe_tools]
-  if all(tc["name"] in safe_toolnames for tc in tool_calls):
-      return "update_flight_safe_tools"
-  return "update_flight_sensitive_tools"
-
-# Helper function to check if CompleteOrEscalate was executed
 def should_route_to_primary(state: State) -> bool:
-    if state["messages"] and len(state["messages"]) > 0:
+    if state.get("messages") and len(state["messages"]) > 0:
         last_message = state["messages"][-1]
-        # Check if the last message is a tool response containing CompleteOrEscalate result
         if hasattr(last_message, 'content') and isinstance(last_message.content, str):
             return 'Task completed/escalated to main assistant' in last_message.content
     return False
 
-# Route functions for tool execution results
-def route_update_flight_tools(state: State) -> Literal["update_flight", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "update_flight"
 
-def route_car_rental_tools(state: State) -> Literal["book_car_rental", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "book_car_rental"
+# ═══════════════════════════════════════════════════════════════════════
+# Appointment Agent
+# ═══════════════════════════════════════════════════════════════════════
 
-def route_hotel_tools(state: State) -> Literal["book_hotel", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "book_hotel"
+builder.add_node("enter_appointment",
+    create_entry_node("Appointment Booking Assistant", "book_appointment"))
+builder.add_node("appointment_agent", appointment_booking_assistant)
+builder.add_edge("enter_appointment", "appointment_agent")
+builder.add_node("appointment_safe_tools",
+    create_tool_node_with_fallback(appointment_safe_tools))
+builder.add_node("appointment_sensitive_tools",
+    create_tool_node_with_fallback(appointment_sensitive_tools))
 
-def route_excursion_tools(state: State) -> Literal["book_excursion", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "book_excursion"
-
-# WooCommerce Assistant
-builder.add_node(
-  "enter_woocommerce",
-  create_entry_node("WooCommerce Assistant", "woocommerce"),
-)
-builder.add_node("woocommerce", woocommerce_assistant)
-builder.add_edge("enter_woocommerce", "woocommerce")
-builder.add_node(
-  "woocommerce_safe_tools",
-  create_tool_node_with_fallback([search_products, search_orders, CompleteOrEscalate]), # Include WooCommerce tools
-)
-
-def route_woocommerce(state: State) -> Literal[
-  "woocommerce_safe_tools",
-  "primary_assistant",
-  "__end__",
+def route_appointment(state: State) -> Literal[
+    "appointment_safe_tools", "appointment_sensitive_tools", "primary_assistant", "__end__",
 ]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  return "woocommerce_safe_tools"
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    safe_names = {t.name for t in appointment_safe_tools}
+    if all(tc["name"] in safe_names for tc in tool_calls):
+        return "appointment_safe_tools"
+    return "appointment_sensitive_tools"
 
-def route_woocommerce_tools(state: State) -> Literal["woocommerce", "primary_assistant"]:
-    logger.info(f"🤖 WooCommerce tools routing check")
-    if should_route_to_primary(state):
-        logger.info(f"➡️ Routing from WooCommerce tools back to primary assistant")
-        return "primary_assistant"
-    else:
-        logger.info(f"➡️ Routing from WooCommerce tools back to WooCommerce assistant")
-        return "woocommerce"
+def route_appointment_tools(state: State) -> Literal["appointment_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "appointment_agent"
 
-builder.add_conditional_edges("woocommerce_safe_tools", route_woocommerce_tools)
-builder.add_conditional_edges("woocommerce", route_woocommerce)
+builder.add_conditional_edges("appointment", lambda s: route_appointment(s))
+builder.add_conditional_edges("appointment_safe_tools", route_appointment_tools)
+builder.add_conditional_edges("appointment_sensitive_tools", route_appointment_tools)
 
-# Form Submission Assistant
-builder.add_node(
-  "enter_form_submission",
-  create_entry_node("Form Submission Assistant", "form_submission"),
-)
-builder.add_node("form_submission", form_submission_assistant)
-builder.add_edge("enter_form_submission", "form_submission")
-builder.add_node(
-  "form_submission_safe_tools",
-  create_tool_node_with_fallback([submit_form, CompleteOrEscalate]), # Include form submission tool
-)
 
-def route_form_submission(state: State) -> Literal[
-  "form_submission_safe_tools",
-  "primary_assistant",
-  "__end__",
+# ═══════════════════════════════════════════════════════════════════════
+# Medication Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_medication",
+    create_entry_node("Medication Management Assistant", "manage_medication"))
+builder.add_node("medication_agent", medication_management_assistant)
+builder.add_edge("enter_medication", "medication_agent")
+builder.add_node("medication_safe_tools",
+    create_tool_node_with_fallback(medication_safe_tools))
+builder.add_node("medication_sensitive_tools",
+    create_tool_node_with_fallback(medication_sensitive_tools))
+
+def route_medication(state: State) -> Literal[
+    "medication_safe_tools", "medication_sensitive_tools", "primary_assistant", "__end__",
 ]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  return "form_submission_safe_tools"
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    safe_names = {t.name for t in medication_safe_tools}
+    if all(tc["name"] in safe_names for tc in tool_calls):
+        return "medication_safe_tools"
+    return "medication_sensitive_tools"
 
-def route_form_submission_tools(state: State) -> Literal["form_submission", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "form_submission"
+def route_medication_tools(state: State) -> Literal["medication_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "medication_agent"
 
-builder.add_conditional_edges("form_submission_safe_tools", route_form_submission_tools)
-builder.add_conditional_edges("form_submission", route_form_submission)
+builder.add_conditional_edges("medication_agent", route_medication)
+builder.add_conditional_edges("medication_safe_tools", route_medication_tools)
+builder.add_conditional_edges("medication_sensitive_tools", route_medication_tools)
 
-# Knowledge Graph Agent
-builder.add_node(
-  "enter_kg_reasoning",
-  create_entry_node("Knowledge Graph Agent", "kg_reasoning"),
-)
+
+# ═══════════════════════════════════════════════════════════════════════
+# Emergency Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_emergency",
+    create_entry_node("Emergency Assistant", "emergency_assist"))
+builder.add_node("emergency_agent", emergency_assistant)
+builder.add_edge("enter_emergency", "emergency_agent")
+builder.add_node("emergency_tools",
+    create_tool_node_with_fallback(emergency_safe_tools))
+
+def route_emergency(state: State) -> Literal[
+    "emergency_tools", "primary_assistant", "__end__",
+]:
+    route = tools_condition(state)
+    if route == END:
+        return END
+    return "emergency_tools"
+
+def route_emergency_tools(state: State) -> Literal["emergency_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "emergency_agent"
+
+builder.add_conditional_edges("emergency_agent", route_emergency)
+builder.add_conditional_edges("emergency_tools", route_emergency_tools)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Health Tips Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_health_tips",
+    create_entry_node("Health & Wellness Advisor", "health_tips"))
+builder.add_node("health_tips_agent", health_tips_assistant)
+builder.add_edge("enter_health_tips", "health_tips_agent")
+builder.add_node("health_tips_tools",
+    create_tool_node_with_fallback(health_tips_safe_tools))
+
+def route_health_tips(state: State) -> Literal[
+    "health_tips_tools", "primary_assistant", "__end__",
+]:
+    route = tools_condition(state)
+    if route == END:
+        return END
+    return "health_tips_tools"
+
+def route_health_tips_tools(state: State) -> Literal["health_tips_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "health_tips_agent"
+
+builder.add_conditional_edges("health_tips_agent", route_health_tips)
+builder.add_conditional_edges("health_tips_tools", route_health_tips_tools)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Medical Record Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_medical_records",
+    create_entry_node("Medical Records Manager", "medical_records"))
+builder.add_node("medical_records_agent", medical_record_assistant)
+builder.add_edge("enter_medical_records", "medical_records_agent")
+builder.add_node("medical_records_safe_tools",
+    create_tool_node_with_fallback(medical_record_safe_tools))
+builder.add_node("medical_records_sensitive_tools",
+    create_tool_node_with_fallback(medical_record_sensitive_tools))
+
+def route_medical_records(state: State) -> Literal[
+    "medical_records_safe_tools", "medical_records_sensitive_tools", "primary_assistant", "__end__",
+]:
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    safe_names = {t.name for t in medical_record_safe_tools}
+    if all(tc["name"] in safe_names for tc in tool_calls):
+        return "medical_records_safe_tools"
+    return "medical_records_sensitive_tools"
+
+def route_medical_records_tools(state: State) -> Literal["medical_records_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "medical_records_agent"
+
+builder.add_conditional_edges("medical_records_agent", route_medical_records)
+builder.add_conditional_edges("medical_records_safe_tools", route_medical_records_tools)
+builder.add_conditional_edges("medical_records_sensitive_tools", route_medical_records_tools)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Health Assessment Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_health_assessment",
+    create_entry_node("Health Assessment Specialist", "health_assessment"))
+builder.add_node("health_assessment_agent", health_assessment_assistant)
+builder.add_edge("enter_health_assessment", "health_assessment_agent")
+builder.add_node("health_assessment_tools",
+    create_tool_node_with_fallback(health_assessment_safe_tools))
+
+def route_health_assessment(state: State) -> Literal[
+    "health_assessment_tools", "primary_assistant", "__end__",
+]:
+    route = tools_condition(state)
+    if route == END:
+        return END
+    return "health_assessment_tools"
+
+def route_health_assessment_tools(state: State) -> Literal["health_assessment_agent", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "health_assessment_agent"
+
+builder.add_conditional_edges("health_assessment_agent", route_health_assessment)
+builder.add_conditional_edges("health_assessment_tools", route_health_assessment_tools)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Medical Knowledge Search Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_medical_kb",
+    create_entry_node("Medical Knowledge Search", "medical_kb"))
+builder.add_node("medical_kb_agent_node", medical_kb_agent)
+builder.add_edge("enter_medical_kb", "medical_kb_agent_node")
+builder.add_node("medical_kb_tools",
+    create_tool_node_with_fallback(medical_kb_safe_tools))
+
+def route_medical_kb(state: State) -> Literal[
+    "medical_kb_tools", "primary_assistant", "__end__",
+]:
+    route = tools_condition(state)
+    if route == END:
+        return END
+    return "medical_kb_tools"
+
+def route_medical_kb_tools(state: State) -> Literal["medical_kb_agent_node", "primary_assistant"]:
+    return "primary_assistant" if should_route_to_primary(state) else "medical_kb_agent_node"
+
+builder.add_conditional_edges("medical_kb_agent_node", route_medical_kb)
+builder.add_conditional_edges("medical_kb_tools", route_medical_kb_tools)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Medical Knowledge Graph Agent
+# ═══════════════════════════════════════════════════════════════════════
+
+builder.add_node("enter_kg",
+    create_entry_node("Medical Knowledge Graph Agent", "medical_kg"))
 builder.add_node("kg_reasoning", kg_agent_node)
-builder.add_edge("enter_kg_reasoning", "kg_reasoning")
-builder.add_node(
-  "kg_agent_tools",
-  create_tool_node_with_fallback(kg_agent_tools),
-)
+builder.add_edge("enter_kg", "kg_reasoning")
+builder.add_node("kg_tools",
+    create_tool_node_with_fallback(kg_agent_tools))
 
 def route_kg(state: State) -> Literal[
-  "kg_agent_tools",
-  "primary_assistant",
-  "__end__",
+    "kg_tools", "primary_assistant", "__end__",
 ]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  return "kg_agent_tools"
+    route = tools_condition(state)
+    if route == END:
+        return END
+    return "kg_tools"
 
 def route_kg_tools(state: State) -> Literal["kg_reasoning", "primary_assistant"]:
     return "primary_assistant" if should_route_to_primary(state) else "kg_reasoning"
 
-builder.add_conditional_edges("kg_agent_tools", route_kg_tools)
 builder.add_conditional_edges("kg_reasoning", route_kg)
+builder.add_conditional_edges("kg_tools", route_kg_tools)
 
-# Blog Search Assistant
-builder.add_node(
-  "enter_blog_search",
-  create_entry_node("Blog Search Assistant", "blog_search"),
-)
-builder.add_node("blog_search", blog_search_assistant)
-builder.add_edge("enter_blog_search", "blog_search")
-builder.add_node(
-  "blog_search_safe_tools",
-  create_tool_node_with_fallback([search_blog_posts, CompleteOrEscalate]), # Include blog search tool
-)
 
-def route_blog_search(state: State) -> Literal[
-  "blog_search_safe_tools",
-  "primary_assistant",
-  "__end__",
-]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  return "blog_search_safe_tools"
+# ═══════════════════════════════════════════════════════════════════════
+# Primary Assistant — Orchestrator
+# ═══════════════════════════════════════════════════════════════════════
 
-def route_blog_search_tools(state: State) -> Literal["blog_search", "primary_assistant"]:
-    return "primary_assistant" if should_route_to_primary(state) else "blog_search"
-
-builder.add_conditional_edges("blog_search_safe_tools", route_blog_search_tools)
-builder.add_conditional_edges("blog_search", route_blog_search)
-
-builder.add_conditional_edges("update_flight_safe_tools", route_update_flight_tools)
-builder.add_conditional_edges("update_flight_sensitive_tools", route_update_flight_tools)
-builder.add_conditional_edges("update_flight", route_update_flight)
-
-# Car Rental Assistant
-builder.add_node(
-  "enter_book_car_rental",
-  create_entry_node("Car Rental Assistant", "book_car_rental"),
-)
-builder.add_node("book_car_rental", car_rental_assistant)
-builder.add_edge("enter_book_car_rental", "book_car_rental")
-builder.add_node(
-  "book_car_rental_safe_tools",
-  create_tool_node_with_fallback(book_car_rental_safe_tools),
-)
-builder.add_node(
-  "book_car_rental_sensitive_tools",
-  create_tool_node_with_fallback(book_car_rental_sensitive_tools),
-)
-
-def route_book_car_rental(state: State) -> Literal[
-  "book_car_rental_safe_tools",
-  "book_car_rental_sensitive_tools",
-  "primary_assistant",
-  "__end__",
-]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  tool_calls = state["messages"][-1].tool_calls
-  safe_toolnames = [t.name for t in book_car_rental_safe_tools]
-  if all(tc["name"] in safe_toolnames for tc in tool_calls):
-      return "book_car_rental_safe_tools"
-  return "book_car_rental_sensitive_tools"
-
-builder.add_conditional_edges("book_car_rental_safe_tools", route_car_rental_tools)
-builder.add_conditional_edges("book_car_rental_sensitive_tools", route_car_rental_tools)
-builder.add_conditional_edges("book_car_rental", route_book_car_rental)
-
-# Hotel Booking Assistant
-builder.add_node(
-  "enter_book_hotel",
-  create_entry_node("Hotel Booking Assistant", "book_hotel"),
-)
-builder.add_node("book_hotel", hotel_booking_assistant)
-builder.add_edge("enter_book_hotel", "book_hotel")
-builder.add_node(
-  "book_hotel_safe_tools",
-  create_tool_node_with_fallback(book_hotel_safe_tools),
-)
-builder.add_node(
-  "book_hotel_sensitive_tools",
-  create_tool_node_with_fallback(book_hotel_sensitive_tools),
-)
-
-def route_book_hotel(state: State) -> Literal[
-  "book_hotel_safe_tools",
-  "book_hotel_sensitive_tools",
-  "primary_assistant",
-  "__end__",
-]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  tool_calls = state["messages"][-1].tool_calls
-  safe_toolnames = [t.name for t in book_hotel_safe_tools]
-  if all(tc["name"] in safe_toolnames for tc in tool_calls):
-      return "book_hotel_safe_tools"
-  return "book_hotel_sensitive_tools"
-
-builder.add_conditional_edges("book_hotel_safe_tools", route_hotel_tools)
-builder.add_conditional_edges("book_hotel_sensitive_tools", route_hotel_tools)
-builder.add_conditional_edges("book_hotel", route_book_hotel)
-
-# Excursion Assistant
-builder.add_node(
-  "enter_book_excursion",
-  create_entry_node("Trip Recommendation Assistant", "book_excursion"),
-)
-builder.add_node("book_excursion", excursion_assistant)
-builder.add_edge("enter_book_excursion", "book_excursion")
-builder.add_node(
-  "book_excursion_safe_tools",
-  create_tool_node_with_fallback(book_excursion_safe_tools),
-)
-builder.add_node(
-  "book_excursion_sensitive_tools",
-  create_tool_node_with_fallback(book_excursion_sensitive_tools),
-)
-
-def route_book_excursion(state: State) -> Literal[
-  "book_excursion_safe_tools",
-  "book_excursion_sensitive_tools",
-  "primary_assistant",
-  "__end__",
-]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  tool_calls = state["messages"][-1].tool_calls
-  safe_toolnames = [t.name for t in book_excursion_safe_tools]
-  if all(tc["name"] in safe_toolnames for tc in tool_calls):
-      return "book_excursion_safe_tools"
-  return "book_excursion_sensitive_tools"
-
-builder.add_conditional_edges("book_excursion_safe_tools", route_excursion_tools)
-builder.add_conditional_edges("book_excursion_sensitive_tools", route_excursion_tools)
-builder.add_conditional_edges("book_excursion", route_book_excursion)
-
-# Primary Assistant
 builder.add_node("primary_assistant", primary_assistant)
-builder.add_node(
-  "primary_assistant_tools", create_tool_node_with_fallback(primary_assistant_tools)
-)
+builder.add_node("primary_assistant_tools",
+    create_tool_node_with_fallback(primary_assistant_tools))
 builder.add_edge("fetch_user_info", "primary_assistant")
 
 def route_primary_assistant(state: State) -> Literal[
-  "primary_assistant_tools",
-  "enter_update_flight",
-  "enter_book_car_rental",
-  "enter_book_hotel",
-  "enter_book_excursion",
-  "enter_woocommerce",
-  "enter_form_submission",
-  "enter_blog_search",
-  "enter_kg_reasoning",
-  "__end__",
+    "primary_assistant_tools",
+    "enter_appointment",
+    "enter_medication",
+    "enter_emergency",
+    "enter_health_tips",
+    "enter_medical_records",
+    "enter_health_assessment",
+    "enter_medical_kb",
+    "enter_kg",
+    "__end__",
 ]:
-  route = tools_condition(state)
-  if route == END:
-      return END
-  tool_calls = state["messages"][-1].tool_calls
-  if tool_calls:
-      tool_name = tool_calls[0]["name"]
-      if tool_name == ToFlightBookingAssistant.__name__:
-          return "enter_update_flight"
-      elif tool_name == ToBookCarRental.__name__:
-          return "enter_book_car_rental"
-      elif tool_name == ToHotelBookingAssistant.__name__:
-          return "enter_book_hotel"
-      elif tool_name == ToBookExcursion.__name__:
-          return "enter_book_excursion"
-      elif tool_name == ToWooCommerceProducts.__name__ or tool_name == ToWooCommerceOrders.__name__:
-          return "enter_woocommerce"
-      elif tool_name == ToFormSubmission.__name__:
-          return "enter_form_submission"
-      elif tool_name == ToBlogSearch.__name__:
-          return "enter_blog_search"
-      elif tool_name == ToKnowledgeGraph.__name__:
-          return "enter_kg_reasoning"
-      else:
-          return "primary_assistant_tools"
-  return "primary_assistant"
+    route = tools_condition(state)
+    if route == END:
+        return END
+    tool_calls = state["messages"][-1].tool_calls
+    if tool_calls:
+        tool_name = tool_calls[0]["name"]
+        routing_map = {
+            ToAppointmentBooking.__name__: "enter_appointment",
+            ToMedicationManagement.__name__: "enter_medication",
+            ToEmergencyAssist.__name__: "enter_emergency",
+            ToHealthTips.__name__: "enter_health_tips",
+            ToMedicalRecords.__name__: "enter_medical_records",
+            ToHealthAssessment.__name__: "enter_health_assessment",
+            ToMedicalKnowledgeSearch.__name__: "enter_medical_kb",
+            ToMedicalKnowledgeGraph.__name__: "enter_kg",
+        }
+        if tool_name in routing_map:
+            logger.info(f"🔀 Routing to: {routing_map[tool_name]}")
+            return routing_map[tool_name]
+        return "primary_assistant_tools"
+    return "primary_assistant"
 
 builder.add_conditional_edges(
-  "primary_assistant",
-  route_primary_assistant,
-  {
-      "enter_update_flight": "enter_update_flight",
-      "enter_book_car_rental": "enter_book_car_rental",
-      "enter_book_hotel": "enter_book_hotel",
-      "enter_book_excursion": "enter_book_excursion",
-      "enter_woocommerce": "enter_woocommerce", # New edge
-      "enter_form_submission": "enter_form_submission", # New edge
-      "enter_blog_search": "enter_blog_search",
-      "enter_kg_reasoning": "enter_kg_reasoning",
-      "primary_assistant_tools": "primary_assistant_tools",
-      END: END,
-  },
+    "primary_assistant",
+    route_primary_assistant,
+    {
+        "enter_appointment": "enter_appointment",
+        "enter_medication": "enter_medication",
+        "enter_emergency": "enter_emergency",
+        "enter_health_tips": "enter_health_tips",
+        "enter_medical_records": "enter_medical_records",
+        "enter_health_assessment": "enter_health_assessment",
+        "enter_medical_kb": "enter_medical_kb",
+        "enter_kg": "enter_kg",
+        "primary_assistant_tools": "primary_assistant_tools",
+        END: END,
+    },
 )
 builder.add_edge("primary_assistant_tools", "primary_assistant")
 
-# Route from guardrail check to primary assistant
+# ── Entry point routing ───────────────────────────────────────────────
+
+builder.add_edge(START, "fetch_user_info")
+builder.add_edge("fetch_user_info", "guardrail_check")
 builder.add_edge("guardrail_check", "primary_assistant")
 
-# Compile the graph with interrupts
+
+# ═══════════════════════════════════════════════════════════════════════
+# Compile with Human-in-the-Loop interrupts
+# ═══════════════════════════════════════════════════════════════════════
+
 interrupt_nodes = [
-  "update_flight_sensitive_tools",
-  "book_car_rental_sensitive_tools",
-  "book_hotel_sensitive_tools",
-  "book_excursion_sensitive_tools",
-  # No interrupts needed for new assistants as they don't have sensitive operations
+    "appointment_sensitive_tools",
+    "medication_sensitive_tools",
+    "medical_records_sensitive_tools",
 ]
 
 memory = MemorySaver()
 multi_agentic_graph = builder.compile(
-  checkpointer=memory,
-  interrupt_before=interrupt_nodes,
+    checkpointer=memory,
+    interrupt_before=interrupt_nodes,
 )

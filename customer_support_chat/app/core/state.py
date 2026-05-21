@@ -1,6 +1,9 @@
+"""State management for the Personal Health Assistant multi-agent system."""
+
 from typing import Annotated, Literal, Optional
 from typing_extensions import TypedDict
 from langgraph.graph.message import AnyMessage, add_messages
+
 
 def update_dialog_stack(left: list[str], right: Optional[str]) -> list[str]:
     """Push or pop the dialog state stack."""
@@ -10,17 +13,19 @@ def update_dialog_stack(left: list[str], right: Optional[str]) -> list[str]:
         return left[:-1]
     return left + [right]
 
+
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     user_info: str
+    user_id: str
     dialog_state: Annotated[
         list[
             Literal[
                 "assistant",
-                "update_flight",
-                "book_car_rental",
-                "book_hotel",
-                "book_excursion",
+                "book_appointment",
+                "manage_medication",
+                "emergency_assist",
+                "health_tips",
             ]
         ],
         update_dialog_stack,
